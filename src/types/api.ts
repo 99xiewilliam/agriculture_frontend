@@ -19,6 +19,21 @@ export interface PredictionResult {
   }
 }
 
+export interface AnswerRequest {
+  query: string
+  images?: string[]
+  max_context?: number
+  config_path?: string
+  selection?: {
+    region_name?: string | null
+    region_fips?: string | null
+    region_state?: string | null
+    crop?: string | null
+    crops?: string[]
+    target_year?: number
+  }
+}
+
 // 扩展的 Answer Response（集成 Agent 字段）
 export interface AnswerResponse {
   answer: string

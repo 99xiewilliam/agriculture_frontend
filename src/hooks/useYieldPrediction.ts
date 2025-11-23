@@ -11,11 +11,12 @@ export function useYieldPrediction() {
 
   return useMutation({
     mutationFn: async (request: AnswerRequest) => {
+      // 使用普通的 answer API
       return apiClient.answer(request)
     },
-    onSuccess: (data) => {
+    onSuccess: (data, variables) => {
       // 缓存结果用于快速回显
-      queryClient.setQueryData(['prediction', data.intent_analysis?.query], data)
+      queryClient.setQueryData(['prediction', variables.query], data)
     },
   })
 }
