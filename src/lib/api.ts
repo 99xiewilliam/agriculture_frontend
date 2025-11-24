@@ -2,9 +2,15 @@
  * GeoTARS API Client
  */
 
-import { AnswerRequest, AnswerResponse, QueryRequest, QueryResponse } from '@/types/api'
+import { AnswerRequest, AnswerResponse, QueryRequest } from '@/types/api'
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8002'
+const LOCAL_MODEL_BASE_URL = 'https://apec.znbverynb.xin'
+const CONTROL_TOKEN_REGEX = /^\[[A-Z0-9_]+\]$/i
+
+type LocalModelOptions = {
+  onToken?: (token: string, meta: { isControl: boolean }) => void
+}
 
 export class APIClient {
   private baseURL: string
@@ -36,7 +42,7 @@ export class APIClient {
   /**
    * 调用 /query 端点：仅检索，不生成
    */
-  async query(request: QueryRequest): Promise<QueryResponse> {
+  async query(request: QueryRequest): Promise<any> {
     const response = await fetch(`${this.baseURL}/query`, {
       method: 'POST',
       headers: {
@@ -82,6 +88,83 @@ export class APIClient {
     }
 
     return response.json()
+  }
+
+  /**
+   * 调用本地大模型 /query_stream 接口
+   */
+  async queryLocalModel(
+    payload: { message: string; target_language: string; user_id: string },
+    options: LocalModelOptions = {}
+  ): Promise<string> {
+    let response: Response
+    try {
+      response = await fetch(`${LOCAL_MODEL_BASE_URL}/query_stream`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload),
+        cache: 'no-store',
+      })
+    } catch (error) {
+      console.error('直接访问模型API失败，可能需要用户接受证书风险:', error)
+      throw error
+    }
+
+    if (!response.ok) {
+      const errorText = await response.text()
+      throw new Error(`Local model API failed: ${response.status} ${errorText}`)
+    }
+
+    const reader = response.body?.getReader()
+    if (reader) {
+      const decoder = new TextDecoder()
+      let buffer = ''
+      let finalText = ''
+
+      const processEvent = (eventChunk: string) => {
+        const lines = eventChunk.split(/\r?\n/)
+        for (const line of lines) {
+          const trimmed = line.trim()
+          if (!trimmed.startsWith('data:')) continue
+          const dataPayload = trimmed.slice(5).trim()
+          if (!dataPayload) continue
+          try {
+            const parsed = JSON.parse(dataPayload)
+            const token: string = typeof parsed.token === 'string' ? parsed.token : ''
+            if (!token) continue
+            const isControl = CONTROL_TOKEN_REGEX.test(token)
+            if (!isControl) {
+              finalText += token
+            }
+            options.onToken?.(token, { isControl })
+          } catch (err) {
+            console.warn('解析本地模型 SSE 数据失败:', err)
+          }
+        }
+      }
+
+      while (true) {
+        const { value, done } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+        let separatorIndex: number
+        while ((separatorIndex = buffer.indexOf('\n\n')) >= 0) {
+          const eventChunk = buffer.slice(0, separatorIndex)
+          buffer = buffer.slice(separatorIndex + 2)
+          if (eventChunk.trim()) {
+            processEvent(eventChunk)
+          }
+        }
+      }
+      if (buffer.trim()) {
+        processEvent(buffer)
+      }
+      return finalText.trim()
+    }
+
+    return (await response.text()).trim()
   }
 }
 

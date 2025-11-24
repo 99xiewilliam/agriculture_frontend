@@ -16,6 +16,7 @@ export interface PredictionResult {
   basis: {
     source: string
     method: string
+    feature_window?: string
   }
 }
 
@@ -35,6 +36,26 @@ export interface AnswerRequest {
 }
 
 // 扩展的 Answer Response（集成 Agent 字段）
+export interface FeatureContextRecord {
+  hrrr_ref_date?: string
+  feature_window?: string
+  avg_temp_c?: number
+  precip_kg_m2?: number
+  vpd_kpa?: number
+  relative_humidity_pct?: number
+  usda_year?: number
+  yield_bu_per_acre?: number
+  production_bu?: number
+}
+
+export interface FeatureContext {
+  region_id: string
+  region_name: string
+  crop: string
+  score: number
+  records: FeatureContextRecord[]
+}
+
 export interface AnswerResponse {
   answer: string
   contexts: Array<{
@@ -78,6 +99,8 @@ export interface AnswerResponse {
     result: string
     duration_ms: number
   }>
+
+  feature_context?: FeatureContext[]
 }
 
 export interface QueryRequest {

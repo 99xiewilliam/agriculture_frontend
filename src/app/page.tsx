@@ -4,13 +4,14 @@
  * GeoTARS 主页面：三栏布局
  */
 
-import { useState } from 'react'
+import { useEffect, useRef, useState, useCallback } from 'react'
 import dynamic from 'next/dynamic'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { RegionSelector } from '@/components/RegionSelector'
 import { EnhancedMultimodalInput } from '@/components/EnhancedMultimodalInput'
 import { PredictionResults } from '@/components/PredictionResults'
-import { VisualizationPanel } from '@/components/VisualizationPanel'
+import { VisualizationPanel, extractTimeSeriesData, TimeSeriesPoint } from '@/components/VisualizationPanel'
+import type { WeatherSeriesPoint } from '@/components/ForecastPanel'
 import { LanguageSwitcher } from '@/components/LanguageSwitcher'
 import { useYieldPrediction } from '@/hooks/useYieldPrediction'
 import { useForecast } from '@/hooks/useForecast'
@@ -18,75 +19,14 @@ import { useAppStore } from '@/store/appStore'
 import { translations } from '@/locales/translations'
 import { Menu, X, Leaf } from 'lucide-react'
 import { AnswerResponse, ForecastResponse } from '@/types/api'
+import { US_STATES } from '@/types/region'
+import { COUNTIES_IL } from '@/data/counties_il'
+import { findNearestCounty } from '@/utils/spatial'
+import { MOCK_COUNTY_DATA } from '@/data/mock_data'
+import { apiClient } from '@/lib/api'
 
 const queryClient = new QueryClient()
 const EarthBackground = dynamic(() => import('@/components/earth'), { ssr: false })
-
-// Mock Data for Earth Interaction
-const MOCK_CHAMPAIGN_DATA = {
-  region: {
-    fips: '17019',
-    name: 'Champaign County',
-    state: 'IL',
-    bbox: null,
-    centroid: null
-  },
-  answer: {
-    answer: `**Region Analysis: Champaign County, IL**
-
-Based on the latest satellite imagery (Sentinel-2) and climate data, the agricultural outlook for Champaign County in 2024 is **Robust**.
-
-**Yield Projections:**
-- **Soybean:** Projected at **64.2 bu/acre**, showing a +3.5% increase over the 5-year baseline. Early vegetative stages benefit from optimal soil moisture.
-- **Corn:** Forecasted at **201.5 bu/acre**. NDVI analysis indicates vigorous canopy development exceeding regional averages.
-
-**Risk Assessment:**
-Current risk levels are **Low-Moderate**. While temperature accumulation is on track, a potential short-term precipitation deficit is forecasted for mid-July.
-
-**Key Insights:**
-The integration of multimodal data suggests that timely planting and favorable early-season conditions have established a strong foundation for high yields.`,
-    predictions: [
-      {
-        region_id: '17019',
-        region_name: 'Champaign County',
-        crop: 'Soybean',
-        baseline_year: 2023,
-        predicted_yield_bu_per_acre: 64.2,
-        predicted_production_bu: 5100000,
-        confidence: 0.92,
-        basis: { source: 'GeoTARS Ensemble', method: 'Multimodal Fusion' }
-      },
-      {
-        region_id: '17019',
-        region_name: 'Champaign County',
-        crop: 'Corn',
-        baseline_year: 2023,
-        predicted_yield_bu_per_acre: 201.5,
-        predicted_production_bu: 14200000,
-        confidence: 0.89,
-        basis: { source: 'GeoTARS Ensemble', method: 'Multimodal Fusion' }
-      }
-    ],
-    intent: {
-      entities: [
-        { text: 'Champaign County', kind: 'region' },
-        { text: 'Soybean', kind: 'crop' }
-      ]
-    }
-  } as AnswerResponse,
-  forecast: {
-    region: 'Champaign County',
-    crop: 'Soybean',
-    growth_stage: 'Reproductive (R1-R2)',
-    forecast_data: [
-      { time: '2024-07-10', temp: 28, precip: 0.0, wind: 12, risk_level: 'Low', risk_detail: 'Optimal conditions', source: 'NOAA' },
-      { time: '2024-07-11', temp: 30, precip: 0.0, wind: 14, risk_level: 'Medium', risk_detail: 'Heat stress watch', source: 'NOAA' },
-      { time: '2024-07-12', temp: 32, precip: 0.0, wind: 10, risk_level: 'Medium', risk_detail: 'High evaporation rate', source: 'NOAA' },
-      { time: '2024-07-13', temp: 29, precip: 8.5, wind: 18, risk_level: 'Low', risk_detail: 'Relief rainfall', source: 'NOAA' },
-      { time: '2024-07-14', temp: 27, precip: 2.0, wind: 8, risk_level: 'Low', risk_detail: 'Post-rain recovery', source: 'NOAA' },
-    ]
-  } as ForecastResponse
-}
 
 function MainContent() {
   const { queryText, selectedRegion, selectedCrops, uploadedImages, sidebarCollapsed, toggleSidebar, language, setForecastData, targetYear, setSelectedRegion, setQueryText } =
@@ -95,15 +35,166 @@ function MainContent() {
   const { mutate: fetchForecast } = useForecast()
   const [result, setResult] = useState<AnswerResponse | null>(null)
   const [showResultModal, setShowResultModal] = useState(false)
+  const seriesTimerRef = useRef<number | null>(null)
+  const weatherTimerRef = useRef<number | null>(null)
+  const [liveSeries, setLiveSeries] = useState<TimeSeriesPoint[]>([])
+  const [liveWeatherSeries, setLiveWeatherSeries] = useState<WeatherSeriesPoint[]>([])
+  const seriesBaselineRef = useRef<SeriesBaseline | null>(null)
+  const weatherBaselineRef = useRef<WeatherBaseline | null>(null)
+  const earthClickLogicRef = useRef<(coords: { lat: number; lng: number }) => void>(() => {})
+  const chatUserIdRef = useRef<string | null>(null)
+  const localAnswerRef = useRef<string | null>(null)
+  const [localAnswer, setLocalAnswer] = useState<string | null>(null)
+  const [isLocalQuerying, setIsLocalQuerying] = useState(false)
   const t = translations[language]
+  const isAnalyzing = isPending || isLocalQuerying
+
+  const ensureChatUserId = useCallback(() => {
+    if (!chatUserIdRef.current) {
+      chatUserIdRef.current = generateUserId()
+    }
+    return chatUserIdRef.current
+  }, [])
+
+  const buildFinalPrompt = useCallback(() => {
+    const regionName = selectedRegion.name || (language === 'zh' ? '所选区域' : 'selected region')
+    const cropNames = selectedCrops.length
+      ? selectedCrops.join(language === 'zh' ? '、' : ', ')
+      : language === 'zh'
+      ? '大豆'
+      : 'soybeans'
+    const base =
+      language === 'zh'
+        ? `请综合最新遥感监测、气象和风险信息，分析 ${regionName} 地区 ${cropNames} 的生产情况、潜在风险与管理建议。`
+        : `Using the latest remote-sensing, weather and risk signals, analyze ${cropNames} in ${regionName} with actionable recommendations.`
+    const followUp = queryText.trim()
+    return followUp
+      ? `${base}\n${language === 'zh' ? '附加问题' : 'Follow-up'}：${followUp}`
+      : base
+  }, [language, queryText, selectedCrops, selectedRegion.name])
+
+  const triggerLocalModel = useCallback(
+    async (prompt: string) => {
+      setIsLocalQuerying(true)
+      let accumulated = ''
+      const updateAnswer = (nextAnswer: string) => {
+        setLocalAnswer(nextAnswer)
+        localAnswerRef.current = nextAnswer
+        setResult((prev) =>
+          prev
+            ? { ...prev, answer: nextAnswer }
+            : {
+                answer: nextAnswer,
+                contexts: [],
+                predictions: [],
+              }
+        )
+      }
+      try {
+        await apiClient.queryLocalModel(
+          {
+            message: prompt,
+            target_language: language === 'zh' ? 'zh' : 'en',
+            user_id: ensureChatUserId(),
+          },
+          {
+            onToken: (token, { isControl }) => {
+              if (!token || isControl) return
+              accumulated += token
+              updateAnswer(accumulated)
+              setShowResultModal(true)
+            },
+          }
+        )
+        if (accumulated) {
+          updateAnswer(accumulated)
+        }
+      } catch (error) {
+        console.error('Local model request failed:', error)
+        alert(language === 'zh' ? '本地模型调用失败，请先接受证书风险后重试。' : 'Local model call failed. Please accept the certificate risk and try again.')
+      } finally {
+        setIsLocalQuerying(false)
+      }
+    },
+    [ensureChatUserId, language, setResult, setLocalAnswer, setShowResultModal]
+  )
+  const stopSeriesTicker = () => {
+    if (seriesTimerRef.current) {
+      window.clearInterval(seriesTimerRef.current)
+      seriesTimerRef.current = null
+    }
+  }
+
+  const startSeriesTicker = (seedSeries: TimeSeriesPoint[]) => {
+    stopSeriesTicker()
+    const baseline = computeSeriesBaseline(seedSeries)
+    seriesBaselineRef.current = baseline
+    const normalizedSeed = normalizeSeriesWindow(seedSeries, baseline)
+    setLiveSeries(normalizedSeed)
+    if (!normalizedSeed.length) return
+    seriesTimerRef.current = window.setInterval(() => {
+      setLiveSeries(prev => {
+        const source = prev.length ? prev : normalizedSeed
+        const nextPoint = generateNextPoint(source[source.length - 1], seriesBaselineRef.current)
+        const nextWindow = [...source.slice(1), nextPoint]
+        return normalizeSeriesWindow(nextWindow, seriesBaselineRef.current)
+      })
+    }, 1000)
+  }
+
+  const stopWeatherTicker = () => {
+    if (weatherTimerRef.current) {
+      window.clearInterval(weatherTimerRef.current)
+      weatherTimerRef.current = null
+    }
+  }
+
+  const startWeatherTicker = (seed: ForecastResponse) => {
+    stopWeatherTicker()
+    const baseSeries = buildWeatherSeries(seed)
+    const baseline = computeWeatherBaseline(baseSeries)
+    weatherBaselineRef.current = baseline
+    const initial = normalizeWeatherWindow(baseSeries, baseline)
+    setLiveWeatherSeries(initial)
+    if (!initial.length) return
+    weatherTimerRef.current = window.setInterval(() => {
+      setLiveWeatherSeries(prev => {
+        const source = prev.length ? prev : initial
+        const next = generateWeatherPoint(source[source.length - 1], weatherBaselineRef.current)
+        return normalizeWeatherWindow([...source.slice(1), next], weatherBaselineRef.current)
+      })
+    }, 1000)
+  }
+
+  useEffect(() => {
+    return () => {
+      stopWeatherTicker()
+      stopSeriesTicker()
+    }
+  }, [])
+  useEffect(() => {
+    if (showResultModal) {
+      ensureChatUserId()
+    }
+  }, [ensureChatUserId, showResultModal])
   const responseData = result ?? data ?? null
   const hasResults = Boolean(responseData)
 
-  const handleSubmit = () => {
-    if (!queryText.trim()) {
-      alert(language === 'zh' ? '请输入查询问题' : 'Please enter a query')
+  const handleSubmit = useCallback(() => {
+    if (!selectedRegion.name) {
+      alert(language === 'zh' ? '请先选择一个县或在地球上点击定位' : 'Please select a county first.')
       return
     }
+    if (!selectedCrops.length) {
+      alert(language === 'zh' ? '请至少选择一种作物' : 'Please select at least one crop.')
+      return
+    }
+
+    setLocalAnswer(null)
+    localAnswerRef.current = null
+
+    const finalPrompt = buildFinalPrompt()
+    triggerLocalModel(finalPrompt)
 
     const primaryCrop = selectedCrops[0] || null
     const selectionPayload = {
@@ -116,10 +207,13 @@ function MainContent() {
     }
 
     predict(
-      { query: queryText, max_context: 5, selection: selectionPayload },
+      { query: finalPrompt, max_context: 5, selection: selectionPayload },
       {
         onSuccess: (response) => {
-          setResult(response)
+          setResult((prev) => ({
+            ...response,
+            answer: localAnswerRef.current ?? prev?.answer ?? response.answer,
+          }))
           setShowResultModal(true)
           
           // Trigger forecast fetch if region and crop are available
@@ -146,23 +240,67 @@ function MainContent() {
         },
       }
     )
-  }
+  }, [
+    selectedRegion.name,
+    selectedCrops,
+    language,
+    buildFinalPrompt,
+    triggerLocalModel,
+    predict,
+    targetYear,
+    fetchForecast,
+    setForecastData,
+    selectedRegion.fips,
+    selectedRegion.state,
+  ])
 
-  const handleEarthClick = () => {
-    // 模拟定位到具体区县 (Champaign County)
-    setSelectedRegion(MOCK_CHAMPAIGN_DATA.region)
-    
-    // 填充查询框（可选）
-    setQueryText(language === 'zh' ? '分析 Champaign County 的大豆产量' : 'Analyze soybean yield in Champaign County')
+  useEffect(() => {
+    earthClickLogicRef.current = ({ lat, lng }: { lat: number; lng: number }) => {
+      const county = findNearestCounty(lat, lng, COUNTIES_IL)
+      if (county) {
+        setSelectedRegion({
+          fips: county.fips,
+          name: `${county.name} County, ${US_STATES[county.state]?.name || county.state}`,
+          state: county.state,
+          bbox: county.bbox,
+          centroid: county.centroid,
+        })
+        setQueryText(language === 'zh'
+          ? `分析 ${county.name} County 的大豆产量`
+          : `Analyze soybean yield in ${county.name} County`)
+      }
+      const mockEntry = county ? MOCK_COUNTY_DATA[county.fips] : undefined
+      if (mockEntry) {
+        setResult(mockEntry.answer)
+        setForecastData(mockEntry.forecast)
+        startWeatherTicker(mockEntry.forecast)
+        const seedSeries = extractTimeSeriesData(mockEntry.answer)
+        startSeriesTicker(seedSeries)
+      } else {
+        setResult(null)
+        setForecastData(null)
+        stopWeatherTicker()
+        stopSeriesTicker()
+        setLiveSeries([])
+        setLiveWeatherSeries([])
+      }
+      setShowResultModal(false)
+    }
+  }, [
+    language,
+    setSelectedRegion,
+    setQueryText,
+    setResult,
+    setForecastData,
+    startWeatherTicker,
+    startSeriesTicker,
+    stopWeatherTicker,
+    stopSeriesTicker
+  ])
 
-    // 设置结果以供右侧面板使用，但不显示中间的模态框
-    setResult({
-      ...MOCK_CHAMPAIGN_DATA.answer,
-      answer: '' // 清空 answer 以避免混淆，或者保留但通过 Modal 控制显隐
-    })
-    setForecastData(MOCK_CHAMPAIGN_DATA.forecast)
-    setShowResultModal(false)
-  }
+  const handleEarthClick = useCallback((coords: { lat: number; lng: number }) => {
+    earthClickLogicRef.current(coords)
+  }, [])
 
   return (
     <div className="h-screen flex flex-col bg-gray-50">
@@ -261,7 +399,7 @@ function MainContent() {
                      
                      {/* Content */}
                      <div className="flex-1 overflow-y-auto p-6">
-                       <PredictionResults data={responseData} isLoading={isPending} />
+                       <PredictionResults data={responseData} isLoading={isAnalyzing} />
                      </div>
                   </div>
                </div>
@@ -273,41 +411,21 @@ function MainContent() {
               role="main"
               aria-label="预测结果展示区域"
             >
-              {!showResultModal && !hasResults && !isPending && (
-                <div className="flex-1 flex flex-col items-center justify-center text-slate-200/80">
-                   <div className="bg-slate-900/50 backdrop-blur-sm px-6 py-3 rounded-full border border-slate-700/50 flex items-center gap-3">
-                      <Leaf className="w-5 h-5 text-green-400" />
-                      <span className="tracking-widest text-sm font-light">请在左侧输入问题并提交查询</span>
-                   </div>
-                </div>
-              )}
             </main>
             
-            {/* Loading State Overlay - Moved outside main to ensure correct positioning */}
-            {isPending && (
-               <div className="absolute inset-0 flex items-center justify-center bg-black/20 backdrop-blur-sm z-50 pointer-events-auto">
-                  <div className="bg-white/95 px-8 py-5 rounded-xl shadow-2xl flex items-center gap-4 border border-gray-100">
-                     <div className="animate-spin h-6 w-6 border-3 border-green-600 border-t-transparent rounded-full" />
-                     <div className="flex flex-col">
-                        <span className="text-gray-900 font-semibold text-base">正在分析区域数据</span>
-                        <span className="text-gray-500 text-xs">调用 Qwen3-VL & MMST-ViT 模型...</span>
-                     </div>
-                  </div>
-               </div>
-            )}
           </div>
 
           {/* 右侧可视化面板 - 独立显示，不被地球遮挡 */}
           <aside
             className={`hidden xl:block w-96 2xl:w-[28rem] overflow-y-auto border-l border-gray-200 transition-colors duration-500 ${
-              hasResults || isPending
+              hasResults || isAnalyzing
                 ? 'bg-gradient-to-bl from-gray-50 to-blue-50/30'
                 : 'bg-white/50'
             }`}
             role="complementary"
             aria-label="数据可视化面板"
           >
-            <VisualizationPanel data={responseData} />
+          <VisualizationPanel data={responseData} liveSeries={liveSeries} liveWeatherSeries={liveWeatherSeries} />
           </aside>
         </div>
       </div>
@@ -334,9 +452,9 @@ function MainContent() {
           
           <div className="flex items-center gap-3">
             <div className="flex items-center gap-2">
-              <div className={`h-2 w-2 rounded-full ${isPending ? 'bg-yellow-500' : 'bg-green-500'}`} />
+              <div className={`h-2 w-2 rounded-full ${isAnalyzing ? 'bg-yellow-500' : 'bg-green-500'}`} />
               <span className="text-gray-600">
-                {isPending ? (language === 'zh' ? '分析中...' : 'Analyzing...') : (language === 'zh' ? '就绪' : 'Ready')}
+                {isAnalyzing ? (language === 'zh' ? '分析中...' : 'Analyzing...') : (language === 'zh' ? '就绪' : 'Ready')}
               </span>
             </div>
             
@@ -346,6 +464,231 @@ function MainContent() {
       </footer>
     </div>
   )
+}
+
+function generateUserId() {
+  if (typeof window !== 'undefined' && window.crypto?.randomUUID) {
+    return window.crypto.randomUUID()
+  }
+  return `geo-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+}
+
+function jitterForecast(seed: ForecastResponse): ForecastResponse {
+  const clamp = (val: number, min: number, max: number) => Math.min(max, Math.max(min, val))
+  const pickRisk = (temp: number, precip: number, wind: number): ForecastResponse['forecast_data'][number]['risk_level'] => {
+    if (temp >= 32 || wind >= 18) return 'High'
+    if (precip === 0 && temp >= 30) return 'Medium'
+    return precip > 6 ? 'Low' : 'Low'
+  }
+
+  return {
+    ...seed,
+    forecast_data: seed.forecast_data.map(entry => {
+      const temp = Number(clamp(entry.temp + (Math.random() - 0.5) * 1.5, 20, 40).toFixed(1))
+      const precip = Number(Math.max(0, entry.precip + (Math.random() - 0.5) * 1.5).toFixed(1))
+      const wind = Math.max(0, Math.round(entry.wind + (Math.random() - 0.5) * 3))
+      const risk_level = pickRisk(temp, precip, wind)
+      return {
+        ...entry,
+        temp,
+        precip,
+        wind,
+        risk_level,
+      }
+    })
+  }
+}
+
+function generateNextPoint(lastPoint: TimeSeriesPoint, baselineInput: SeriesBaseline | null): TimeSeriesPoint {
+  const baseline = baselineInput ?? defaultSeriesBaseline(lastPoint)
+  const lastTimestamp = lastPoint.timestamp ?? Date.now()
+  const timestamp = lastTimestamp + 1000
+
+  return {
+    timestamp,
+    label: formatTimeLabel(new Date(timestamp)),
+    temp_c: meanRevertingStep(lastPoint.temp_c, baseline.temp, 0.15),
+    precip: Math.max(0, meanRevertingStep(lastPoint.precip, baseline.precip, 0.25)),
+    vpd: Math.max(0, meanRevertingStep(lastPoint.vpd, baseline.vpd, 0.04)),
+    rh: Math.min(100, Math.max(30, meanRevertingStep(lastPoint.rh, baseline.rh, 0.6))),
+  }
+}
+
+const SERIES_WINDOW = 30
+const WEATHER_WINDOW = 20
+
+function normalizeSeriesWindow(seed: TimeSeriesPoint[], baselineInput: SeriesBaseline | null): TimeSeriesPoint[] {
+  if (!seed.length) return []
+  const trimmed = seed.slice(-SERIES_WINDOW)
+  if (trimmed.length === SERIES_WINDOW) return trimmed
+
+  const missing = SERIES_WINDOW - trimmed.length
+  const first = trimmed[0]
+  const fillers: TimeSeriesPoint[] = []
+  const baseline = baselineInput ?? defaultSeriesBaseline(first)
+  let prevTemp = first.temp_c
+  let prevPrecip = first.precip
+  let prevVpd = first.vpd
+  let prevRh = first.rh
+  for (let i = missing; i > 0; i--) {
+    const timestamp = first.timestamp - i * 1000
+    prevTemp = meanRevertingStep(prevTemp, baseline.temp, 0.12)
+    prevPrecip = meanRevertingStep(prevPrecip, baseline.precip, 0.2)
+    prevVpd = meanRevertingStep(prevVpd, baseline.vpd, 0.03)
+    prevRh = meanRevertingStep(prevRh, baseline.rh, 0.5)
+    fillers.push({
+      timestamp,
+      label: formatTimeLabel(new Date(timestamp)),
+      temp_c: prevTemp,
+      precip: Math.max(0, prevPrecip),
+      vpd: Math.max(0, prevVpd),
+      rh: Math.min(100, Math.max(30, prevRh)),
+      ghost: true,
+    })
+  }
+  return [...fillers, ...trimmed]
+}
+
+function buildWeatherSeries(forecast: ForecastResponse): WeatherSeriesPoint[] {
+  const now = Date.now()
+  return forecast.forecast_data.map((entry, idx) => {
+    const timestamp = now - (forecast.forecast_data.length - idx) * 1000
+    return {
+      timestamp,
+      label: formatTimeLabel(new Date(timestamp)),
+      temp: entry.temp,
+      wind: entry.wind,
+      precip: entry.precip,
+    }
+  })
+}
+
+function generateWeatherPoint(last: WeatherSeriesPoint, baselineInput: WeatherBaseline | null): WeatherSeriesPoint {
+  const baseline = baselineInput ?? defaultWeatherBaseline(last)
+  const timestamp = last.timestamp + 1000
+  return {
+    timestamp,
+    label: formatTimeLabel(new Date(timestamp)),
+    temp: meanRevertingStep(last.temp, baseline.temp, 0.12),
+    wind: meanRevertingStep(last.wind, baseline.wind, 0.2),
+    precip: Math.max(0, meanRevertingStep(last.precip, baseline.precip, 0.25)),
+  }
+}
+
+function normalizeWeatherWindow(series: WeatherSeriesPoint[], baselineInput: WeatherBaseline | null): WeatherSeriesPoint[] {
+  if (!series.length) return []
+  const trimmed = series.slice(-WEATHER_WINDOW)
+  if (trimmed.length === WEATHER_WINDOW) return trimmed
+  const missing = WEATHER_WINDOW - trimmed.length
+  const first = trimmed[0]
+  const baseline = baselineInput ?? defaultWeatherBaseline(first)
+  const fillers: WeatherSeriesPoint[] = []
+  let prevTemp = first.temp
+  let prevWind = first.wind
+  let prevPrecip = first.precip
+  for (let i = missing; i > 0; i--) {
+    const timestamp = first.timestamp - i * 1000
+    prevTemp = meanRevertingStep(prevTemp, baseline.temp, 0.1)
+    prevWind = meanRevertingStep(prevWind, baseline.wind, 0.15)
+    prevPrecip = meanRevertingStep(prevPrecip, baseline.precip, 0.2)
+    fillers.push({
+      timestamp,
+      label: formatTimeLabel(new Date(timestamp)),
+      temp: prevTemp,
+      wind: prevWind,
+      precip: Math.max(0, prevPrecip),
+      ghost: true,
+    })
+  }
+  return [...fillers, ...trimmed]
+}
+
+const formatTimeLabel = (date: Date) =>
+  date.toLocaleTimeString(undefined, { hour12: false })
+
+type MetricStats = { mean: number; min: number; max: number }
+type SeriesBaseline = {
+  temp: MetricStats
+  precip: MetricStats
+  vpd: MetricStats
+  rh: MetricStats
+}
+type WeatherBaseline = {
+  temp: MetricStats
+  wind: MetricStats
+  precip: MetricStats
+}
+
+function computeSeriesBaseline(series: TimeSeriesPoint[]): SeriesBaseline {
+  const fallback = defaultSeriesBaseline(series[0])
+  if (!series.length) return fallback
+  return {
+    temp: computeMetricStatsFromAccessor(series, (pt) => pt.temp_c, fallback.temp),
+    precip: computeMetricStatsFromAccessor(series, (pt) => pt.precip, fallback.precip),
+    vpd: computeMetricStatsFromAccessor(series, (pt) => pt.vpd, fallback.vpd),
+    rh: computeMetricStatsFromAccessor(series, (pt) => pt.rh, fallback.rh),
+  }
+}
+
+function computeWeatherBaseline(series: WeatherSeriesPoint[]): WeatherBaseline {
+  const fallback = defaultWeatherBaseline(series[0])
+  if (!series.length) return fallback
+  return {
+    temp: computeMetricStatsFromAccessor(series, (pt) => pt.temp, fallback.temp),
+    wind: computeMetricStatsFromAccessor(series, (pt) => pt.wind, fallback.wind),
+    precip: computeMetricStatsFromAccessor(series, (pt) => pt.precip, fallback.precip),
+  }
+}
+
+function computeMetricStatsFromAccessor<T>(
+  points: T[],
+  getter: (pt: T) => number | undefined,
+  fallback: MetricStats
+): MetricStats {
+  const values = points
+    .map(getter)
+    .filter((v): v is number => typeof v === 'number' && !Number.isNaN(v))
+  if (!values.length) return fallback
+  const sum = values.reduce((acc, val) => acc + val, 0)
+  const mean = sum / values.length
+  const min = Math.min(...values)
+  const max = Math.max(...values)
+  return { mean, min, max }
+}
+
+function meanRevertingStep(value: number | undefined, stats: MetricStats, maxStep: number): number {
+  const current = typeof value === 'number' && !Number.isNaN(value) ? value : stats.mean
+  const drift = (stats.mean - current) * 0.25
+  const random = (Math.random() - 0.5) * maxStep * 2
+  const next = current + drift + random
+  const buffer = Math.max(0.1, (stats.max - stats.min) * 0.15)
+  const clampMin = stats.min - buffer
+  const clampMax = stats.max + buffer
+  return Number(Math.min(clampMax, Math.max(clampMin, next)).toFixed(2))
+}
+
+function defaultSeriesBaseline(seed?: TimeSeriesPoint | null): SeriesBaseline {
+  const temp = seed?.temp_c ?? 28
+  const precip = seed?.precip ?? 2
+  const vpd = seed?.vpd ?? 1
+  const rh = seed?.rh ?? 65
+  return {
+    temp: { mean: temp, min: temp - 3, max: temp + 3 },
+    precip: { mean: precip, min: 0, max: Math.max(5, precip + 3) },
+    vpd: { mean: vpd, min: Math.max(0, vpd - 0.5), max: vpd + 0.5 },
+    rh: { mean: rh, min: 40, max: 95 },
+  }
+}
+
+function defaultWeatherBaseline(seed?: WeatherSeriesPoint | null): WeatherBaseline {
+  const temp = seed?.temp ?? 28
+  const wind = seed?.wind ?? 8
+  const precip = seed?.precip ?? 2
+  return {
+    temp: { mean: temp, min: 10, max: 45 },
+    wind: { mean: wind, min: 0, max: 20 },
+    precip: { mean: precip, min: 0, max: Math.max(5, precip + 5) },
+  }
 }
 
 export default function Home() {

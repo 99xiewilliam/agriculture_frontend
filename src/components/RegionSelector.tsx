@@ -8,6 +8,7 @@ import { useEffect, useState } from 'react'
 import { MapPin, ChevronDown, X, Globe } from 'lucide-react'
 import { useAppStore } from '@/store/appStore'
 import { US_STATES, GLOBAL_REGIONS, County } from '@/types/region'
+import { COUNTIES_IL } from '@/data/counties_il'
 import { translations } from '@/locales/translations'
 import dynamic from 'next/dynamic'
 
@@ -36,17 +37,10 @@ export function RegionSelector() {
   const loadCountiesForState = async (stateAbbr: string) => {
     setLoading(true)
     try {
-      // TODO: 从后端 API 获取县列表
-      // const res = await fetch(`/api/regions/counties?state=${stateAbbr}`)
-      // const data = await res.json()
-      
-      // 暂时用 Mock 数据（后续可从 shapefile 动态生成）
-      const mockCounties: County[] = [
-        { fips: '17167', name: 'Sangamon', state: stateAbbr, stateFips: US_STATES[stateAbbr].fips, bbox: [-89.99, 39.52, -89.22, 39.98], centroid: [39.76, -89.66] },
-        { fips: '17113', name: 'McLean', state: stateAbbr, stateFips: US_STATES[stateAbbr].fips, bbox: [-89.22, 40.32, -88.42, 40.88], centroid: [40.60, -88.82] },
-        { fips: '17119', name: 'Madison', state: stateAbbr, stateFips: US_STATES[stateAbbr].fips, bbox: [-90.5, 38.5, -89.5, 39.0], centroid: [38.8, -90.0] },
-      ]
-      setCounties(mockCounties)
+      // 从统一的静态数据源加载（当前仅示例 IL）
+      const list: County[] =
+        stateAbbr === 'IL' ? COUNTIES_IL : []
+      setCounties(list)
     } catch (error) {
       console.error('Failed to load counties:', error)
     } finally {

@@ -4,10 +4,23 @@ import React from 'react'
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, Area, AreaChart } from 'recharts'
 import { useAppStore } from '@/store/appStore'
 import { translations } from '@/locales/translations'
-import { TrendingUp, Wind, CloudRain, Thermometer, AlertTriangle } from 'lucide-react'
+import { TrendingUp, Thermometer, AlertTriangle } from 'lucide-react'
 import type { ForecastEntry } from '@/types/api'
 
-export function ForecastPanel() {
+export type WeatherSeriesPoint = {
+  timestamp: number
+  label: string
+  temp: number
+  wind: number
+  precip: number
+  ghost?: boolean
+}
+
+interface ForecastPanelProps {
+  liveWeatherSeries?: WeatherSeriesPoint[]
+}
+
+export function ForecastPanel({ liveWeatherSeries }: ForecastPanelProps) {
   const { language, forecastData } = useAppStore()
   const t = translations[language]
 
@@ -24,18 +37,19 @@ export function ForecastPanel() {
   const { region, crop, growth_stage, forecast_data } = forecastData
 
   // Transform data for Recharts
-  const chartData = forecast_data.map((entry: ForecastEntry) => {
-    const time = new Date(entry.time)
+  const now = Date.now()
+  const baseWeatherSeries = forecast_data.map((entry: ForecastEntry, idx: number) => {
+    const timestamp = now - (forecast_data.length - idx) * 1000
+    const label = formatTimeLabel(new Date(timestamp))
     return {
-      time: `${time.getMonth() + 1}/${time.getDate()} ${time.getHours()}:00`,
+      timestamp,
+      label,
       temp: entry.temp,
       wind: entry.wind,
       precip: entry.precip,
-      risk_numeric: entry.risk_level === 'Critical' ? 4 : entry.risk_level === 'High' ? 3 : entry.risk_level === 'Medium' ? 2 : 1,
-      risk_label: entry.risk_level,
-      source: entry.source,
     }
   })
+  const weatherSeries = liveWeatherSeries && liveWeatherSeries.length ? liveWeatherSeries : baseWeatherSeries
 
   // Risk color mapping
   const getRiskColor = (level: string) => {
@@ -94,7 +108,14 @@ export function ForecastPanel() {
           {language === 'zh' ? '风险等级时序' : 'Risk Level Timeline'}
         </h4>
         <ResponsiveContainer width="100%" height={200}>
-          <AreaChart data={chartData}>
+          <AreaChart data={forecast_data.map((entry: ForecastEntry) => {
+            const time = new Date(entry.time)
+            return {
+              time: `${time.getMonth() + 1}/${time.getDate()} ${time.getHours()}:00`,
+              risk_numeric: entry.risk_level === 'Critical' ? 4 : entry.risk_level === 'High' ? 3 : entry.risk_level === 'Medium' ? 2 : 1,
+              risk_label: entry.risk_level,
+            }
+          })}>
             <CartesianGrid strokeDasharray="3 3" stroke="#E5E7EB" />
             <XAxis dataKey="time" tick={{ fontSize: 11 }} stroke="#9CA3AF" />
             <YAxis domain={[0, 4]} ticks={[1, 2, 3, 4]} tick={{ fontSize: 11 }} stroke="#9CA3AF" />
@@ -122,11 +143,32 @@ export function ForecastPanel() {
           {language === 'zh' ? '气象要素变化' : 'Weather Metrics'}
         </h4>
         <ResponsiveContainer width="100%" height={250}>
-          <LineChart data={chartData}>
+          <LineChart data={weatherSeries}>
             <CartesianGrid strokeDasharray="3 3" stroke="#E5E7EB" />
-            <XAxis dataKey="time" tick={{ fontSize: 11 }} stroke="#9CA3AF" />
-            <YAxis yAxisId="left" tick={{ fontSize: 11 }} stroke="#9CA3AF" />
-            <YAxis yAxisId="right" orientation="right" tick={{ fontSize: 11 }} stroke="#9CA3AF" />
+            <XAxis
+              dataKey="label"
+              tick={{ fontSize: 10 }}
+              stroke="#9CA3AF"
+              type="category"
+              ticks={weatherSeries.filter((_, idx) => idx % 4 === 0).map(point => point.label)}
+              allowDataOverflow
+              interval={0}
+            />
+            <YAxis
+              yAxisId="left"
+              tick={{ fontSize: 11 }}
+              stroke="#9CA3AF"
+              domain={[0, (dataMax: number) => Math.ceil(dataMax + 5)]}
+              allowDataOverflow
+            />
+            <YAxis
+              yAxisId="right"
+              orientation="right"
+              tick={{ fontSize: 11 }}
+              stroke="#9CA3AF"
+              domain={[0, (dataMax: number) => Math.ceil(dataMax + 3)]}
+              allowDataOverflow
+            />
             <Tooltip
               content={({ active, payload }) => {
                 if (!active || !payload?.[0]) return null
@@ -142,9 +184,9 @@ export function ForecastPanel() {
               }}
             />
             <Legend wrapperStyle={{ fontSize: 12 }} />
-            <Line yAxisId="left" type="monotone" dataKey="temp" stroke="#EF4444" name={language === 'zh' ? '温度(°C)' : 'Temp (°C)'} strokeWidth={2} dot={false} />
-            <Line yAxisId="left" type="monotone" dataKey="wind" stroke="#3B82F6" name={language === 'zh' ? '风速(m/s)' : 'Wind (m/s)'} strokeWidth={2} dot={false} />
-            <Line yAxisId="right" type="monotone" dataKey="precip" stroke="#10B981" name={language === 'zh' ? '降水(mm)' : 'Precip (mm)'} strokeWidth={2} dot={false} />
+            <Line yAxisId="left" type="monotone" dataKey="temp" stroke="#EF4444" name={language === 'zh' ? '温度(°C)' : 'Temp (°C)'} strokeWidth={2} dot={false} isAnimationActive={false} />
+            <Line yAxisId="left" type="monotone" dataKey="wind" stroke="#3B82F6" name={language === 'zh' ? '风速(m/s)' : 'Wind (m/s)'} strokeWidth={2} dot={false} isAnimationActive={false} />
+            <Line yAxisId="right" type="monotone" dataKey="precip" stroke="#10B981" name={language === 'zh' ? '降水(mm)' : 'Precip (mm)'} strokeWidth={2} dot={false} isAnimationActive={false} />
           </LineChart>
         </ResponsiveContainer>
       </div>
@@ -187,4 +229,7 @@ export function ForecastPanel() {
     </div>
   )
 }
+
+const formatTimeLabel = (date: Date) =>
+  date.toLocaleTimeString(undefined, { hour12: false })
 

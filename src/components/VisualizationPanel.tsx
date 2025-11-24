@@ -4,19 +4,37 @@
  * 可视化面板：时序图表、气象对比等
  */
 
+import { useMemo } from 'react'
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, BarChart, Bar } from 'recharts'
-import { AnswerResponse } from '@/types/api'
+import type { AnswerResponse, FeatureContext, FeatureContextRecord } from '@/types/api'
 import { useAppStore } from '@/store/appStore'
 import { translations } from '@/locales/translations'
-import { ForecastPanel } from './ForecastPanel'
+import { ForecastPanel, WeatherSeriesPoint } from './ForecastPanel'
+
+export type TimeSeriesPoint = {
+  timestamp: number
+  label: string
+  temp_c?: number
+  precip?: number
+  vpd?: number
+  rh?: number
+  ghost?: boolean
+}
 
 interface VisualizationPanelProps {
   data: AnswerResponse | null
+  liveSeries?: TimeSeriesPoint[]
+  liveWeatherSeries?: WeatherSeriesPoint[]
 }
 
-export function VisualizationPanel({ data }: VisualizationPanelProps) {
+export function VisualizationPanel({ data, liveSeries, liveWeatherSeries }: VisualizationPanelProps) {
   const { language } = useAppStore()
   const t = translations[language]
+
+  const baseTimeSeriesData = useMemo(() => (data ? extractTimeSeriesData(data) : []), [data])
+  const historicalYields = useMemo(() => (data ? extractHistoricalYields(data) : []), [data])
+  const featureContext = useMemo(() => (data?.feature_context ?? []), [data])
+  const chartSeries = liveSeries && liveSeries.length ? liveSeries : baseTimeSeriesData
 
   if (!data) {
     return (
@@ -26,33 +44,44 @@ export function VisualizationPanel({ data }: VisualizationPanelProps) {
     )
   }
 
-  // 从 feature_context 提取时序数据
-  const timeSeriesData = extractTimeSeriesData(data)
-  const historicalYields = extractHistoricalYields(data)
-
   return (
     <div className="space-y-6 p-6 bg-gray-50 h-full overflow-y-auto">
       {/* 未来风险预报面板 */}
-      <ForecastPanel />
+      <ForecastPanel liveWeatherSeries={liveWeatherSeries} />
 
       {/* 气象时序图 */}
-      {timeSeriesData.length > 0 && (
+      {chartSeries.length > 0 && (
         <div className="bg-white rounded-lg shadow p-4">
           <h3 className="text-md font-bold text-gray-900 mb-4">
             {language === 'zh' ? '气象特征时序' : 'Weather Time Series'}
           </h3>
           <ResponsiveContainer width="100%" height={250}>
-            <LineChart data={timeSeriesData}>
+            <LineChart data={chartSeries}>
               <CartesianGrid strokeDasharray="3 3" />
               <XAxis
-                dataKey="date"
-                tick={{ fontSize: 11 }}
-                angle={-45}
+                dataKey="label"
+                tick={{ fontSize: 10 }}
+                angle={-30}
                 textAnchor="end"
-                height={60}
+                height={50}
+                ticks={chartSeries.filter((_, idx) => idx % 5 === 0).map(point => point.label)}
+                interval={0}
+                allowDataOverflow
+                type="category"
               />
-              <YAxis yAxisId="left" tick={{ fontSize: 11 }} />
-              <YAxis yAxisId="right" orientation="right" tick={{ fontSize: 11 }} />
+              <YAxis
+                yAxisId="left"
+                tick={{ fontSize: 11 }}
+                domain={[0, (dataMax: number) => Math.ceil(dataMax + 5)]}
+                allowDataOverflow
+              />
+              <YAxis
+                yAxisId="right"
+                orientation="right"
+                tick={{ fontSize: 11 }}
+                domain={[0, (dataMax: number) => Math.ceil(dataMax + 3)]}
+                allowDataOverflow
+              />
               <Tooltip />
               <Legend wrapperStyle={{ fontSize: 11 }} />
               <Line
@@ -62,6 +91,8 @@ export function VisualizationPanel({ data }: VisualizationPanelProps) {
                 stroke="#ef4444"
                 name={language === 'zh' ? "气温(°C)" : "Temp(°C)"}
                 strokeWidth={2}
+                isAnimationActive={false}
+                dot={false}
               />
               <Line
                 yAxisId="right"
@@ -70,6 +101,8 @@ export function VisualizationPanel({ data }: VisualizationPanelProps) {
                 stroke="#3b82f6"
                 name={language === 'zh' ? "降水(kg/m²)" : "Precip(kg/m²)"}
                 strokeWidth={2}
+                isAnimationActive={false}
+                dot={false}
               />
               <Line
                 yAxisId="left"
@@ -79,6 +112,8 @@ export function VisualizationPanel({ data }: VisualizationPanelProps) {
                 name="VPD(kPa)"
                 strokeWidth={1.5}
                 strokeDasharray="5 5"
+                isAnimationActive={false}
+                dot={false}
               />
             </LineChart>
           </ResponsiveContainer>
@@ -105,7 +140,7 @@ export function VisualizationPanel({ data }: VisualizationPanelProps) {
       )}
 
       {/* 特征快照表格 */}
-      {data.feature_context && data.feature_context.length > 0 && (
+      {featureContext.length > 0 && (
         <div className="bg-white rounded-lg shadow p-4">
           <h3 className="text-md font-bold text-gray-900 mb-4">
             {language === 'zh' ? '特征快照' : 'Feature Snapshot'}
@@ -121,7 +156,7 @@ export function VisualizationPanel({ data }: VisualizationPanelProps) {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-200">
-                {data.feature_context.map((feat, idx) => (
+                {featureContext.map((feat, idx) => (
                   <tr key={idx} className="hover:bg-gray-50">
                     <td className="px-3 py-2 text-gray-800">{feat.region_name || feat.region_id}</td>
                     <td className="px-3 py-2">
@@ -170,35 +205,37 @@ function EvidenceCard({ context, index }: { context: any; index: number }) {
 }
 
 // 辅助函数：从 feature_context 提取时序数据
-function extractTimeSeriesData(data: AnswerResponse): any[] {
-  const features = data.feature_context || []
-  const result: any[] = []
-
+export function extractTimeSeriesData(data: AnswerResponse): TimeSeriesPoint[] {
+  const features: FeatureContext[] = data.feature_context || []
+  const now = Date.now()
+  const records: FeatureContextRecord[] = []
   features.forEach((feat) => {
     if (feat.records && feat.records.length > 0) {
-      feat.records.forEach((rec) => {
-        result.push({
-          date: rec.hrrr_ref_date || rec.feature_window || 'Unknown',
-          temp_c: rec.avg_temp_c,
-          precip: rec.precip_kg_m2,
-          vpd: rec.vpd_kpa,
-          rh: rec.relative_humidity_pct,
-        })
-      })
+      records.push(...feat.records)
     }
   })
 
-  return result
+  return records.map((rec, idx) => {
+    const timestamp = now - (records.length - idx) * 1000
+    return {
+      timestamp,
+      label: new Date(timestamp).toLocaleTimeString(undefined, { hour12: false }),
+      temp_c: rec.avg_temp_c,
+      precip: rec.precip_kg_m2,
+      vpd: rec.vpd_kpa,
+      rh: rec.relative_humidity_pct,
+    }
+  })
 }
 
 // 提取历史产量趋势
 function extractHistoricalYields(data: AnswerResponse): any[] {
-  const features = data.feature_context || []
+  const features: FeatureContext[] = data.feature_context || []
   const yields: any[] = []
 
   features.forEach((feat) => {
     if (feat.records && feat.records.length > 0) {
-      feat.records.forEach((rec) => {
+      feat.records.forEach((rec: FeatureContextRecord) => {
         if (rec.usda_year && rec.yield_bu_per_acre) {
           yields.push({
             year: rec.usda_year,
@@ -217,3 +254,4 @@ function extractHistoricalYields(data: AnswerResponse): any[] {
 
   return uniqueYields
 }
+
