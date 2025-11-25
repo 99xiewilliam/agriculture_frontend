@@ -377,7 +377,7 @@ function MainContent() {
 
       {/* 快照预览（放大查看） */}
       {rsPreviewIdx !== null && rsImages[rsPreviewIdx] && (
-        <div className="fixed inset-0 z-40 flex items-center justify-center p-6 bg-black/50">
+        <div className="fixed inset-0 z-40 flex items-center justify-center p-6 bg-white/40 backdrop-blur-sm">
           <div className="relative bg-white rounded-2xl shadow-2xl border border-white/40 max-w-5xl w-full max-h-[90%] overflow-hidden">
             <button
               type="button"
@@ -387,7 +387,7 @@ function MainContent() {
             >
               <X className="w-6 h-6 text-gray-600" />
             </button>
-            <div className="w-full h-full flex items-center justify-center p-4 bg-black">
+            <div className="w-full h-full flex items-center justify-center p-4 bg-gradient-to-b from-white to-gray-50">
               <img
                 src={rsImages[rsPreviewIdx]}
                 alt="RS-Preview"
@@ -547,7 +547,7 @@ function normalizeWeatherWindow(series: WeatherSeriesPoint[], baselineInput: Wea
 }
 
 const formatTimeLabel = (date: Date) =>
-  date.toLocaleTimeString(undefined, { hour12: false })
+  date.toLocaleTimeString(undefined, { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })
 
 type MetricStats = { mean: number; min: number; max: number }
 type SeriesBaseline = {

@@ -166,8 +166,10 @@ ${priceLines}${question}
 
   const openCopilot = () => {
     const prompt = buildCopilotPrompt()
+    // 先生成/确定 userId，再打开，避免首开时 userId 为空导致 useEffect 跳过
+    const ensuredId = chatUserId ?? generateUserId()
+    setChatUserId(ensuredId)
     setChatPrompt(prompt)
-    setChatUserId(chatUserId ?? generateUserId())
     setChatOpen(true)
   }
 
@@ -284,6 +286,7 @@ ${priceLines}${question}
 
       {/* Chatbox 弹窗（流式） */}
       <Chatbox
+        key={(chatUserId || 'no-id') + ':' + (chatPrompt || '')}
         open={chatOpen}
         onClose={() => setChatOpen(false)}
         initialPrompt={chatPrompt}

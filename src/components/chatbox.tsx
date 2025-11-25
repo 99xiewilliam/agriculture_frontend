@@ -43,6 +43,8 @@ export function Chatbox({ open, onClose, initialPrompt, userId, language }: Chat
   const chatEndRef = useRef<HTMLDivElement | null>(null)
   const chatHistoryRef = useRef<ChatMessage[]>([])
   const sessionKeyRef = useRef<string | null>(null)
+  // 本地 zIndex：用于与其他弹窗（如 CropDis）互相叠放时，点击置顶
+  const [zIndex, setZIndex] = useState<number>(50)
   const chatText = translations[language].chatbox
   const phaseLabels: Record<ActionPhase, string> = {
     GUARD_CHECK: chatText.stages.guardCheck,
@@ -80,6 +82,8 @@ export function Chatbox({ open, onClose, initialPrompt, userId, language }: Chat
       const x = Math.max(12, Math.round((vw - width) / 2))
       const y = Math.max(12, Math.round((vh - height) / 2))
       setPosition({ x, y })
+      // 打开时至少在较高层级
+      setZIndex((prev) => (prev < 60 ? 60 : prev))
     })
   }, [open])
 
@@ -110,6 +114,8 @@ export function Chatbox({ open, onClose, initialPrompt, userId, language }: Chat
   const onHeaderPointerDown = useCallback(
     (e: React.PointerEvent<HTMLDivElement>) => {
       setDragging(true)
+      // 点击标题栏时置顶本弹窗
+      setZIndex((prev) => (prev < 60 ? 60 : prev + 1))
       dragOffsetRef.current = { dx: e.clientX - position.x, dy: e.clientY - position.y }
       try {
         e.currentTarget.setPointerCapture(e.pointerId)
@@ -267,7 +273,7 @@ export function Chatbox({ open, onClose, initialPrompt, userId, language }: Chat
   if (!open) return null
 
   return (
-    <div className="fixed inset-0 z-40 pointer-events-none">
+    <div className="fixed inset-0 pointer-events-none" style={{ zIndex }}>
       <div
         ref={boxRef}
         className="w-full max-w-3xl pointer-events-auto bg-white/95 backdrop-blur-xl rounded-[32px] shadow-2xl border border-white/60 flex flex-col h-[85vh] fixed"
