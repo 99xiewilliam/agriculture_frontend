@@ -299,3 +299,96 @@ Harvest-ready wheat retains strong test weights after a dry finish, while double
 }
 
 
+// ========== 作物分布与价格走势（模拟） ==========
+export type CropDistributionItem = {
+  crop: string
+  area_pct: number
+}
+
+export type PricePoint = {
+  date: string
+  price_usd: number
+}
+
+export type CropDisDataset = {
+  fips: string
+  county: string
+  distribution: CropDistributionItem[]
+  priceForecast: PricePoint[]
+  // 新增：按作物的价格预测（每个作物一条独立时间序列）
+  priceByCrop?: Record<string, PricePoint[]>
+}
+
+function buildPriceSeries(seed: number, days = 14, base = 12): PricePoint[] {
+  const out: PricePoint[] = []
+  const now = new Date()
+  let value = base + (seed % 5)
+  for (let i = 0; i < days; i += 1) {
+    const d = new Date(now.getTime() + i * 24 * 3600 * 1000)
+    // 轻微均值回归 + 随机扰动
+    const drift = (base - value) * 0.15
+    const shock = (Math.random() - 0.5) * 0.6
+    value = Math.max(6, value + drift + shock)
+    out.push({ date: d.toISOString().slice(0, 10), price_usd: Number(value.toFixed(2)) })
+  }
+  return out
+}
+
+export const MOCK_CROPDIS_DATA: Record<string, CropDisDataset> = {
+  // Sangamon
+  '17167': {
+    fips: '17167',
+    county: 'Sangamon County',
+    distribution: [
+      { crop: 'Corn', area_pct: 46 },
+      { crop: 'Soybean', area_pct: 40 },
+      { crop: 'Wheat', area_pct: 6 },
+      { crop: 'Hay', area_pct: 8 },
+    ],
+    priceForecast: buildPriceSeries(1, 16, 12.5),
+    priceByCrop: {
+      Corn: buildPriceSeries(101, 16, 5.2),
+      Soybean: buildPriceSeries(102, 16, 12.6),
+      Wheat: buildPriceSeries(103, 16, 6.4),
+      Hay: buildPriceSeries(104, 16, 8.2),
+    },
+  },
+  // McLean
+  '17113': {
+    fips: '17113',
+    county: 'McLean County',
+    distribution: [
+      { crop: 'Corn', area_pct: 48 },
+      { crop: 'Soybean', area_pct: 42 },
+      { crop: 'Wheat', area_pct: 5 },
+      { crop: 'Others', area_pct: 5 },
+    ],
+    priceForecast: buildPriceSeries(2, 16, 12.2),
+    priceByCrop: {
+      Corn: buildPriceSeries(201, 16, 5.0),
+      Soybean: buildPriceSeries(202, 16, 12.3),
+      Wheat: buildPriceSeries(203, 16, 6.2),
+      Others: buildPriceSeries(204, 16, 7.5),
+    },
+  },
+  // Madison
+  '17119': {
+    fips: '17119',
+    county: 'Madison County',
+    distribution: [
+      { crop: 'Wheat', area_pct: 34 },
+      { crop: 'Soybean', area_pct: 36 },
+      { crop: 'Corn', area_pct: 25 },
+      { crop: 'Others', area_pct: 5 },
+    ],
+    priceForecast: buildPriceSeries(3, 16, 11.8),
+    priceByCrop: {
+      Wheat: buildPriceSeries(301, 16, 6.6),
+      Soybean: buildPriceSeries(302, 16, 12.0),
+      Corn: buildPriceSeries(303, 16, 5.1),
+      Others: buildPriceSeries(304, 16, 7.2),
+    },
+  },
+}
+
+

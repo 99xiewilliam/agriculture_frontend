@@ -139,8 +139,24 @@ export class APIClient {
               finalText += token
             }
             options.onToken?.(token, { isControl })
+            try {
+              // 调试：打印可能的 Markdown 标题 token（例如以 # 开头）
+              if (!isControl && /^#{1,6}\s/.test(token) || !isControl && /(\n|\r)#{1,6}\s/.test(token)) {
+                // eslint-disable-next-line no-console
+                console.debug('[API][SSE-Heading-Token]', JSON.stringify(token))
+              }
+            } catch {}
           } catch (err) {
-            console.warn('解析本地模型 SSE 数据失败:', err)
+            // Fallback: 支持 data: [DONE] 或 data: [CONTROL] 这类非 JSON 事件
+            const raw = dataPayload
+            if (CONTROL_TOKEN_REGEX.test(raw)) {
+              // 控制事件（如 [DONE]、[GUARD_CHECK]）
+              options.onToken?.(raw, { isControl: true })
+            } else {
+              // 纯文本 token（极少数后端会直接输出字符串）
+              finalText += raw
+              options.onToken?.(raw, { isControl: false })
+            }
           }
         }
       }

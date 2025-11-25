@@ -13,8 +13,6 @@ import { PredictionResults } from '@/components/PredictionResults'
 import { VisualizationPanel, extractTimeSeriesData, TimeSeriesPoint } from '@/components/VisualizationPanel'
 import type { WeatherSeriesPoint } from '@/components/ForecastPanel'
 import { LanguageSwitcher } from '@/components/LanguageSwitcher'
-import { useYieldPrediction } from '@/hooks/useYieldPrediction'
-import { useForecast } from '@/hooks/useForecast'
 import { useAppStore } from '@/store/appStore'
 import { translations } from '@/locales/translations'
 import { Menu, X, Leaf } from 'lucide-react'
@@ -23,16 +21,14 @@ import { US_STATES } from '@/types/region'
 import { COUNTIES_IL } from '@/data/counties_il'
 import { findNearestCounty } from '@/utils/spatial'
 import { MOCK_COUNTY_DATA } from '@/data/mock_data'
-import { apiClient } from '@/lib/api'
+import { Chatbox } from '@/components/chatbox'
 
 const queryClient = new QueryClient()
 const EarthBackground = dynamic(() => import('@/components/earth'), { ssr: false })
 
 function MainContent() {
-  const { queryText, selectedRegion, selectedCrops, uploadedImages, sidebarCollapsed, toggleSidebar, language, setForecastData, targetYear, setSelectedRegion, setQueryText } =
+  const { queryText, selectedRegion, selectedCrops, uploadedImages, sidebarCollapsed, toggleSidebar, language, setForecastData, setSelectedRegion, setQueryText } =
     useAppStore()
-  const { mutate: predict, isPending, data } = useYieldPrediction()
-  const { mutate: fetchForecast } = useForecast()
   const [result, setResult] = useState<AnswerResponse | null>(null)
   const [showResultModal, setShowResultModal] = useState(false)
   const seriesTimerRef = useRef<number | null>(null)
@@ -42,19 +38,13 @@ function MainContent() {
   const seriesBaselineRef = useRef<SeriesBaseline | null>(null)
   const weatherBaselineRef = useRef<WeatherBaseline | null>(null)
   const earthClickLogicRef = useRef<(coords: { lat: number; lng: number }) => void>(() => {})
-  const chatUserIdRef = useRef<string | null>(null)
-  const localAnswerRef = useRef<string | null>(null)
-  const [localAnswer, setLocalAnswer] = useState<string | null>(null)
-  const [isLocalQuerying, setIsLocalQuerying] = useState(false)
+  const [isChatboxOpen, setIsChatboxOpen] = useState(false)
+  const [chatboxPrompt, setChatboxPrompt] = useState<string | null>(null)
+  const [chatboxUserId, setChatboxUserId] = useState<string | null>(null)
+  const [rsImages, setRsImages] = useState<string[]>([])
+  const [rsPreviewIdx, setRsPreviewIdx] = useState<number | null>(null)
   const t = translations[language]
-  const isAnalyzing = isPending || isLocalQuerying
-
-  const ensureChatUserId = useCallback(() => {
-    if (!chatUserIdRef.current) {
-      chatUserIdRef.current = generateUserId()
-    }
-    return chatUserIdRef.current
-  }, [])
+  const isAnalyzing = isChatboxOpen
 
   const buildFinalPrompt = useCallback(() => {
     const regionName = selectedRegion.name || (language === 'zh' ? '所选区域' : 'selected region')
@@ -73,51 +63,11 @@ function MainContent() {
       : base
   }, [language, queryText, selectedCrops, selectedRegion.name])
 
-  const triggerLocalModel = useCallback(
-    async (prompt: string) => {
-      setIsLocalQuerying(true)
-      let accumulated = ''
-      const updateAnswer = (nextAnswer: string) => {
-        setLocalAnswer(nextAnswer)
-        localAnswerRef.current = nextAnswer
-        setResult((prev) =>
-          prev
-            ? { ...prev, answer: nextAnswer }
-            : {
-                answer: nextAnswer,
-                contexts: [],
-                predictions: [],
-              }
-        )
-      }
-      try {
-        await apiClient.queryLocalModel(
-          {
-            message: prompt,
-            target_language: language === 'zh' ? 'zh' : 'en',
-            user_id: ensureChatUserId(),
-          },
-          {
-            onToken: (token, { isControl }) => {
-              if (!token || isControl) return
-              accumulated += token
-              updateAnswer(accumulated)
-              setShowResultModal(true)
-            },
-          }
-        )
-        if (accumulated) {
-          updateAnswer(accumulated)
-        }
-      } catch (error) {
-        console.error('Local model request failed:', error)
-        alert(language === 'zh' ? '本地模型调用失败，请先接受证书风险后重试。' : 'Local model call failed. Please accept the certificate risk and try again.')
-      } finally {
-        setIsLocalQuerying(false)
-      }
-    },
-    [ensureChatUserId, language, setResult, setLocalAnswer, setShowResultModal]
-  )
+  const handleChatboxClose = useCallback(() => {
+    setIsChatboxOpen(false)
+    setChatboxPrompt(null)
+    setChatboxUserId(null)
+  }, [])
   const stopSeriesTicker = () => {
     if (seriesTimerRef.current) {
       window.clearInterval(seriesTimerRef.current)
@@ -139,7 +89,7 @@ function MainContent() {
         const nextWindow = [...source.slice(1), nextPoint]
         return normalizeSeriesWindow(nextWindow, seriesBaselineRef.current)
       })
-    }, 1000)
+    }, 5000)
   }
 
   const stopWeatherTicker = () => {
@@ -163,7 +113,7 @@ function MainContent() {
         const next = generateWeatherPoint(source[source.length - 1], weatherBaselineRef.current)
         return normalizeWeatherWindow([...source.slice(1), next], weatherBaselineRef.current)
       })
-    }, 1000)
+    }, 5000)
   }
 
   useEffect(() => {
@@ -172,13 +122,32 @@ function MainContent() {
       stopSeriesTicker()
     }
   }, [])
-  useEffect(() => {
-    if (showResultModal) {
-      ensureChatUserId()
-    }
-  }, [ensureChatUserId, showResultModal])
-  const responseData = result ?? data ?? null
+  const responseData = result
   const hasResults = Boolean(responseData)
+
+  const loadRandomRsImages = useCallback(async (count = 4) => {
+    try {
+      const res = await fetch(`/api/rs-images?count=${count}`, { cache: 'no-store' })
+      if (!res.ok) return
+      const data = await res.json().catch(() => null)
+      if (data?.images && Array.isArray(data.images)) {
+        setRsImages(data.images as string[])
+      }
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.warn('Failed to load RS images', e)
+      setRsImages([])
+    }
+  }, [])
+
+  // 当选择县发生变化时，随机加载4张遥感图片
+  useEffect(() => {
+    if (selectedRegion?.name || selectedRegion?.fips) {
+      void loadRandomRsImages(4)
+    } else {
+      setRsImages([])
+    }
+  }, [selectedRegion?.name, selectedRegion?.fips, loadRandomRsImages])
 
   const handleSubmit = useCallback(() => {
     if (!selectedRegion.name) {
@@ -190,69 +159,12 @@ function MainContent() {
       return
     }
 
-    setLocalAnswer(null)
-    localAnswerRef.current = null
-
     const finalPrompt = buildFinalPrompt()
-    triggerLocalModel(finalPrompt)
-
-    const primaryCrop = selectedCrops[0] || null
-    const selectionPayload = {
-      region_name: selectedRegion.name || undefined,
-      region_fips: selectedRegion.fips || undefined,
-      region_state: selectedRegion.state || undefined,
-      crop: primaryCrop,
-      crops: selectedCrops.length ? selectedCrops : undefined,
-      target_year: targetYear,
-    }
-
-    predict(
-      { query: finalPrompt, max_context: 5, selection: selectionPayload },
-      {
-        onSuccess: (response) => {
-          setResult((prev) => ({
-            ...response,
-            answer: localAnswerRef.current ?? prev?.answer ?? response.answer,
-          }))
-          setShowResultModal(true)
-          
-          // Trigger forecast fetch if region and crop are available
-          const regionName = selectedRegion.name || response.intent?.entities?.find((e: any) => e.kind === 'region')?.text
-          const cropName = selectedCrops[0] || response.intent?.entities?.find((e: any) => e.kind === 'crop')?.text
-          
-          if (regionName && cropName) {
-            fetchForecast(
-              { region: regionName, crop: cropName },
-              {
-                onSuccess: (forecastRes) => {
-                  setForecastData(forecastRes)
-                },
-                onError: (err) => {
-                  console.warn('Forecast fetch failed:', err)
-                  setForecastData(null)
-                }
-              }
-            )
-          }
-        },
-        onError: (error) => {
-          alert(`${language === 'zh' ? '预测失败' : 'Prediction Failed'}: ${error.message}`)
-        },
-      }
-    )
-  }, [
-    selectedRegion.name,
-    selectedCrops,
-    language,
-    buildFinalPrompt,
-    triggerLocalModel,
-    predict,
-    targetYear,
-    fetchForecast,
-    setForecastData,
-    selectedRegion.fips,
-    selectedRegion.state,
-  ])
+    const sessionUserId = generateUserId()
+    setChatboxPrompt(finalPrompt)
+    setChatboxUserId(sessionUserId)
+    setIsChatboxOpen(true)
+  }, [selectedRegion.name, selectedCrops, language, buildFinalPrompt])
 
   useEffect(() => {
     earthClickLogicRef.current = ({ lat, lng }: { lat: number; lng: number }) => {
@@ -361,7 +273,7 @@ function MainContent() {
           aria-label="输入控制面板"
         >
           <div className="p-4 space-y-6">
-            <RegionSelector />
+            <RegionSelector rsImages={rsImages} onPreview={setRsPreviewIdx} />
             <EnhancedMultimodalInput onSubmit={handleSubmit} />
           </div>
         </aside>
@@ -462,6 +374,37 @@ function MainContent() {
           </div>
         </div>
       </footer>
+
+      {/* 快照预览（放大查看） */}
+      {rsPreviewIdx !== null && rsImages[rsPreviewIdx] && (
+        <div className="fixed inset-0 z-40 flex items-center justify-center p-6 bg-black/50">
+          <div className="relative bg-white rounded-2xl shadow-2xl border border-white/40 max-w-5xl w-full max-h-[90%] overflow-hidden">
+            <button
+              type="button"
+              onClick={() => setRsPreviewIdx(null)}
+              className="absolute top-3 right-3 p-2 rounded-full hover:bg-gray-100 transition"
+              aria-label="Close preview"
+            >
+              <X className="w-6 h-6 text-gray-600" />
+            </button>
+            <div className="w-full h-full flex items-center justify-center p-4 bg-black">
+              <img
+                src={rsImages[rsPreviewIdx]}
+                alt="RS-Preview"
+                className="max-w-full max-h-[80vh] object-contain"
+              />
+            </div>
+          </div>
+        </div>
+      )}
+
+      <Chatbox
+        open={isChatboxOpen}
+        onClose={handleChatboxClose}
+        initialPrompt={chatboxPrompt}
+        userId={chatboxUserId}
+        language={language}
+      />
     </div>
   )
 }
@@ -502,7 +445,7 @@ function jitterForecast(seed: ForecastResponse): ForecastResponse {
 function generateNextPoint(lastPoint: TimeSeriesPoint, baselineInput: SeriesBaseline | null): TimeSeriesPoint {
   const baseline = baselineInput ?? defaultSeriesBaseline(lastPoint)
   const lastTimestamp = lastPoint.timestamp ?? Date.now()
-  const timestamp = lastTimestamp + 1000
+  const timestamp = lastTimestamp + 5000
 
   return {
     timestamp,
@@ -531,7 +474,7 @@ function normalizeSeriesWindow(seed: TimeSeriesPoint[], baselineInput: SeriesBas
   let prevVpd = first.vpd
   let prevRh = first.rh
   for (let i = missing; i > 0; i--) {
-    const timestamp = first.timestamp - i * 1000
+    const timestamp = first.timestamp - i * 5000
     prevTemp = meanRevertingStep(prevTemp, baseline.temp, 0.12)
     prevPrecip = meanRevertingStep(prevPrecip, baseline.precip, 0.2)
     prevVpd = meanRevertingStep(prevVpd, baseline.vpd, 0.03)
@@ -552,7 +495,7 @@ function normalizeSeriesWindow(seed: TimeSeriesPoint[], baselineInput: SeriesBas
 function buildWeatherSeries(forecast: ForecastResponse): WeatherSeriesPoint[] {
   const now = Date.now()
   return forecast.forecast_data.map((entry, idx) => {
-    const timestamp = now - (forecast.forecast_data.length - idx) * 1000
+    const timestamp = now - (forecast.forecast_data.length - idx) * 5000
     return {
       timestamp,
       label: formatTimeLabel(new Date(timestamp)),
@@ -565,7 +508,7 @@ function buildWeatherSeries(forecast: ForecastResponse): WeatherSeriesPoint[] {
 
 function generateWeatherPoint(last: WeatherSeriesPoint, baselineInput: WeatherBaseline | null): WeatherSeriesPoint {
   const baseline = baselineInput ?? defaultWeatherBaseline(last)
-  const timestamp = last.timestamp + 1000
+  const timestamp = last.timestamp + 5000
   return {
     timestamp,
     label: formatTimeLabel(new Date(timestamp)),
@@ -587,7 +530,7 @@ function normalizeWeatherWindow(series: WeatherSeriesPoint[], baselineInput: Wea
   let prevWind = first.wind
   let prevPrecip = first.precip
   for (let i = missing; i > 0; i--) {
-    const timestamp = first.timestamp - i * 1000
+    const timestamp = first.timestamp - i * 5000
     prevTemp = meanRevertingStep(prevTemp, baseline.temp, 0.1)
     prevWind = meanRevertingStep(prevWind, baseline.wind, 0.15)
     prevPrecip = meanRevertingStep(prevPrecip, baseline.precip, 0.2)

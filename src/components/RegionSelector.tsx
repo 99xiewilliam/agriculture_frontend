@@ -11,13 +11,19 @@ import { US_STATES, GLOBAL_REGIONS, County } from '@/types/region'
 import { COUNTIES_IL } from '@/data/counties_il'
 import { translations } from '@/locales/translations'
 import dynamic from 'next/dynamic'
+import CropDis from './CropDis'
 
 const InteractiveMap = dynamic(() => import('./InteractiveMap'), {
   ssr: false,
   loading: () => <div className="h-64 bg-gray-100 rounded animate-pulse" />,
 })
 
-export function RegionSelector() {
+interface RegionSelectorProps {
+  rsImages?: string[]
+  onPreview?: (idx: number) => void
+}
+
+export function RegionSelector({ rsImages = [], onPreview }: RegionSelectorProps) {
   const { selectedRegion, setSelectedRegion, selectedCrops, language } = useAppStore()
   const [mode, setMode] = useState<'us' | 'global'>('us') // 模式切换
   const [stateFilter, setStateFilter] = useState('IL')
@@ -25,6 +31,9 @@ export function RegionSelector() {
   const [showDropdown, setShowDropdown] = useState(false)
   const [counties, setCounties] = useState<County[]>([])
   const [loading, setLoading] = useState(false)
+  const [showCropDis, setShowCropDis] = useState(false)
+  const [cropDisFips, setCropDisFips] = useState<string | null>(null)
+  const [cropDisCounty, setCropDisCounty] = useState<string | null>(null)
   const t = translations[language]
 
   // 动态加载县数据（从后端或静态文件）
@@ -68,6 +77,10 @@ export function RegionSelector() {
     })
     setShowDropdown(false)
     setSearchTerm('')
+    // 点击矩形框/选择县后，弹出作物分布+价格预测
+    setCropDisFips(county.fips)
+    setCropDisCounty(`${county.name} County`)
+    setShowCropDis(true)
   }
 
   const handleGlobalRegionSelect = (region: typeof GLOBAL_REGIONS[0]) => {
@@ -285,6 +298,31 @@ export function RegionSelector() {
         </details>
       )}
 
+      {/* 遥感快照：显示在交互式地图下面、作物选择上面 */}
+      {rsImages && rsImages.length > 0 && (
+        <div className="card-clean p-4">
+          <div className="text-sm font-semibold text-gray-700 mb-3">
+            {language === 'zh' ? '遥感快照' : 'Remote Sensing Snapshots'}
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            {rsImages.slice(0, 4).map((src, idx) => (
+              <button
+                key={idx}
+                type="button"
+                onClick={() => onPreview?.(idx)}
+                className="relative w-full overflow-hidden rounded-lg border border-gray-200 bg-gray-50 focus:outline-none focus:ring-2 focus:ring-emerald-400"
+              >
+                <img
+                  src={src}
+                  alt={`RS-${idx + 1}`}
+                  className="block w-full h-28 object-cover"
+                />
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
       {mode === 'global' && (
         <div className="card-clean p-4 bg-blue-50/30">
           <p className="text-xs text-gray-600">
@@ -343,6 +381,13 @@ export function RegionSelector() {
           className="w-full px-3.5 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-green-500/20 focus:border-green-500 bg-gray-50/50 text-gray-900 font-medium transition-all"
         />
       </div>
+      {/* 作物分布弹窗 */}
+      <CropDis
+        open={showCropDis}
+        fips={cropDisFips}
+        countyName={cropDisCounty || selectedRegion.name || undefined}
+        onClose={() => setShowCropDis(false)}
+      />
     </div>
   )
 }
