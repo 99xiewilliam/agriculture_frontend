@@ -243,13 +243,6 @@ function MainContent() {
           
           {/* 右侧标签 & 语言切换 */}
           <div className="flex items-center gap-4">
-            <div className="hidden md:block text-right">
-              <p className="text-sm font-semibold text-gray-900">Multimodal Agriculture Analysis</p>
-              <p className="text-xs text-gray-500 mt-0.5">
-                Powered by <span className="text-green-600 font-medium">Qwen3-VL</span> & <span className="text-blue-600 font-medium">MMST-ViT</span>
-              </p>
-            </div>
-            <div className="h-8 w-px bg-gray-200 hidden md:block" />
             <LanguageSwitcher />
           </div>
         </div>

@@ -286,7 +286,7 @@ export function Chatbox({ open, onClose, initialPrompt, userId, language }: Chat
           <div>
             <div className="flex items-center gap-2 text-gray-900 font-semibold">
               <MessageCircle className="h-5 w-5 text-green-600" />
-              <span>{chatText.title}</span>
+              <span>{chatText.title} · Powered by APEC APIP Copilot</span>
             </div>
             <p className="text-xs text-gray-500 mt-1">{chatText.subtitle}</p>
           </div>
