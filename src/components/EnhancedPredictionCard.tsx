@@ -149,7 +149,7 @@ export function EnhancedPredictionCard({ prediction, index = 0 }: EnhancedPredic
               <span className="text-sm font-bold text-red-900">风险信号</span>
             </div>
             <div className="flex flex-wrap gap-2">
-              {prediction.risk_flags.map((risk, i) => (
+              {prediction.risk_flags?.map((risk, i) => (
                 <span
                   key={i}
                   className="badge bg-white text-red-700 border-2 border-red-300 shadow-sm"
